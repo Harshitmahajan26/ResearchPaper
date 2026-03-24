@@ -1,0 +1,58 @@
+# Experiment Configuration - Spring Boot vs FastAPI Study
+# Use this file to ensure reproducible runs
+
+experiment:
+  name: "Spring Boot vs FastAPI Resource Efficiency"
+  version: "1.0"
+
+resource_limits:
+  cpu:
+    - 0.5
+    - 1.0
+    - 2.0
+  memory_mb:
+    - 256
+    - 512
+    - 1024
+
+workload_cpu:
+  duration_ms: 200  # CPU-bound work duration per request
+  algorithm: "prime"  # prime | factorial | matrix
+
+workload_io:
+  delay_ms_options:
+    - 50
+    - 200
+    - 500
+  default_delay_ms: 200
+
+load_test_phases:
+  warmup:
+    users: 50
+    ramp_up_sec: 60
+    duration_min: 2
+  normal:
+    users: 100
+    ramp_up_sec: 30
+    duration_min: 5
+  high:
+    users: 500
+    ramp_up_sec: 60
+    duration_min: 5
+  stress:
+    users: 1000
+    ramp_up_sec: 120
+    duration_min: 10
+
+failure_criteria:
+  error_rate_threshold_pct: 5
+  latency_max_ms: 10000
+
+versions:
+  java: "17"
+  python: "3.11"
+  spring_boot: "3.2"
+  fastapi: "0.109"
+  prometheus: "2.45"
+  grafana: "10.2"
+  jmeter: "5.6"
