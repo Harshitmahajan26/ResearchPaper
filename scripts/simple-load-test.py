@@ -1,147 +1,108 @@
 #!/usr/bin/env python3
 """
-Generate graphs from load test CSV results.
-Usage: python3 plot-results.py [path-to-csv]
-If no path given, uses the most recent CSV in jmeter/results/
+Simple load test fallback when JMeter is not installed.
+Uses only Python stdlib (no extra deps). Saves results to CSV.
+Usage: python3 simple-load-test.py [spring-boot|fastapi] [cpu|io] [phase]
 """
 
 import sys
+import time
 import csv
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.request import urlopen, Request
 
-# Check for matplotlib
-try:
-    import matplotlib.pyplot as plt
-    import matplotlib
-    matplotlib.use("Agg")  # Non-interactive backend
-except ImportError:
-    print("matplotlib not installed. Run: pip install matplotlib")
-    sys.exit(1)
-
+# Project root
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
-def load_csv(path):
-    """Load CSV and return lists of (index, latency_ms)."""
-    rows = []
-    with open(path) as f:
-        r = csv.DictReader(f)
-        for row in r:
+def load_test(base_url, path, num_threads, duration_sec, ramp_up_sec):
+    """Run load test and return latency samples."""
+    results = []
+    start = time.perf_counter()
+
+    def worker(thread_id):
+        latencies = []
+        end_time = start + duration_sec
+        # Ramp up: stagger thread starts
+        time.sleep(ramp_up_sec * (thread_id / max(num_threads, 1)))
+        while time.perf_counter() < end_time:
             try:
-                elapsed = float(row.get("elapsed", 0))
-                if elapsed > 0:
-                    rows.append((len(rows), elapsed))
-            except (ValueError, KeyError):
-                pass
-    return rows
+                t0 = time.perf_counter()
+                with urlopen(Request(f"{base_url}{path}"), timeout=30) as r:
+                    r.read()
+                latencies.append((time.perf_counter() - t0) * 1000)
+            except Exception as e:
+                latencies.append(-1) # Error
+            time.sleep(0.01) # Small pause to avoid 100% CPU
+        return latencies
 
-def plot_results(csv_path):
-    rows = load_csv(csv_path)
-    if not rows:
-        print("No valid data in CSV")
-        return
+    with ThreadPoolExecutor(max_workers=num_threads) as ex:
+        futures = [ex.submit(worker, i) for i in range(num_threads)]
+        for f in as_completed(futures):
+            results.extend(f.result())
 
-    indices = [r[0] for r in rows]
-    latencies = [r[1] for r in rows]
+    return [r for r in results if r >= 0]
 
-    # Parse filename for title (e.g. spring-boot_cpu_normal_1774092524.csv)
-    name = Path(csv_path).stem
-    parts = name.split("_")
-    framework = parts[0] if len(parts) >= 1 else "unknown"
-    workload = parts[1] if len(parts) >= 2 else "unknown"
-    phase = parts[2] if len(parts) >= 3 else "unknown"
-    title = f"{framework} | {workload} | {phase}"
-
-    out_dir = PROJECT_DIR / "analysis" / "figures"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1. Main Dashboard: 2x2 Layout
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-
-    # Latency over time (sampled for performance)
-    sample = 5000 if len(indices) > 5000 else len(indices)
-    step = max(1, len(indices) // sample)
-    idx_samp = indices[::step]
-    lat_samp = latencies[::step]
-
-    axes[0, 0].scatter(idx_samp, lat_samp, s=1, alpha=0.5)
-    axes[0, 0].set_xlabel("Request index")
-    axes[0, 0].set_ylabel("Latency (ms)")
-    axes[0, 0].set_title("Latency over time")
-    axes[0, 0].grid(True, alpha=0.3)
-
-    # Latency histogram
-    axes[0, 1].hist(latencies, bins=50, edgecolor="black", alpha=0.7)
-    axes[0, 1].set_xlabel("Latency (ms)")
-    axes[0, 1].set_ylabel("Count")
-    axes[0, 1].set_title("Latency distribution")
-    axes[0, 1].grid(True, alpha=0.3)
-
-    # Throughput calculation (rolling window)
-    window_sec = 10
-    total_sec = 300  # Default test duration
-    time_per_req = total_sec / len(rows) if rows else 1
-    window_size = int(window_sec / time_per_req) if time_per_req > 0 else 100
-    
-    throughput_x, throughput_y = [], []
-    for i in range(0, len(rows) - window_size, max(1, window_size // 5)):
-        chunk = latencies[i : i + window_size]
-        t = (i + window_size / 2) * time_per_req
-        rps = len(chunk) / window_sec
-        throughput_x.append(t)
-        throughput_y.append(rps)
-
-    if throughput_x:
-        axes[1, 0].plot(throughput_x, throughput_y, color="green")
-        axes[1, 0].set_xlabel("Time (s)")
-        axes[1, 0].set_ylabel("Throughput (req/s)")
-        axes[1, 0].set_title("Throughput over time (10s window)")
-        axes[1, 0].grid(True, alpha=0.3)
-
-    # Summary stats text block
-    lat_sorted = sorted(latencies)
-    n = len(lat_sorted)
-    p50, p95, p99 = lat_sorted[int(n*0.5)], lat_sorted[int(n*0.95)], lat_sorted[int(n*0.99)]
-    
-    summary = f"Total requests: {n}\nThroughput: {n/300:.1f} req/s\n\n"
-    summary += f"p50: {p50:.0f} ms\np95: {p95:.0f} ms\np99: {p99:.0f} ms"
-    
-    axes[1, 1].text(0.1, 0.5, summary, fontsize=12, family="monospace", va="center")
-    axes[1, 1].axis("off")
-    axes[1, 1].set_title("Summary Statistics")
-
-    fig.suptitle(title, fontsize=14, y=1.02)
-    plt.tight_layout()
-    plt.savefig(out_dir / f"{name}.png", dpi=150, bbox_inches="tight")
-    plt.close()
-
-    # 2. Publication-Ready Histogram with Percentiles
-    fig2, ax = plt.subplots(figsize=(10, 5))
-    ax.hist(latencies, bins=80, edgecolor="black", alpha=0.7, color="steelblue")
-    ax.axvline(p50, color="green", linestyle="--", label=f"p50: {p50:.0f} ms")
-    ax.axvline(p95, color="orange", linestyle="--", label=f"p95: {p95:.0f} ms")
-    ax.axvline(p99, color="red", linestyle="--", label=f"p99: {p99:.0f} ms")
-    ax.set_title(f"{title} - Latency Distribution")
-    ax.set_xlabel("Latency (ms)")
-    ax.set_ylabel("Count")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    plt.savefig(out_dir / f"{name}_histogram.png", dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"Graphs saved to {out_dir}")
+def percentile(sorted_list, p):
+    if not sorted_list:
+        return 0
+    k = (len(sorted_list) - 1) * p / 100
+    f = int(k)
+    return sorted_list[f] if f >= len(sorted_list) - 1 else sorted_list[f] + (k - f) * (sorted_list[f + 1] - sorted_list[f])
 
 def main():
-    if len(sys.argv) > 1:
-        csv_path = Path(sys.argv[1])
-    else:
-        results_dir = PROJECT_DIR / "jmeter" / "results"
-        csvs = list(results_dir.glob("*.csv"))
-        if not csvs:
-            print("No CSV files found.")
-            sys.exit(1)
-        csv_path = max(csvs, key=lambda p: p.stat().st_mtime)
+    framework = sys.argv[1] if len(sys.argv) > 1 else "spring-boot"
+    workload = sys.argv[2] if len(sys.argv) > 2 else "cpu"
+    phase = sys.argv[3] if len(sys.argv) > 3 else "normal"
 
-    plot_results(csv_path)
+    port = 8080 if framework == "spring-boot" else 8000
+    base_url = f"http://localhost:{port}"
+    path = "/api/cpu/work?durationMs=200" if workload == "cpu" else "/api/io/delay?delayMs=200"
+
+    phases = {
+        "warmup": (50, 60, 120),
+        "normal": (100, 30, 300),
+        "high": (500, 60, 300),
+        "stress": (1000, 120, 600),
+    }
+    
+    threads, ramp_up, duration = phases.get(phase, phases["normal"])
+
+    print(f"Running: {framework} | {workload} | {phase} | {threads} users | {duration}s")
+    print(f"Target: {base_url}{path}")
+
+    results = load_test(base_url, path, threads, duration, ramp_up)
+
+    if not results:
+        print("No successful requests. Is the server running?")
+        sys.exit(1)
+
+    results.sort()
+    total = len(results)
+    elapsed = duration
+    throughput = total / elapsed if elapsed else 0
+    p50 = percentile(results, 50)
+    p95 = percentile(results, 95)
+    p99 = percentile(results, 99)
+
+    print(f"\n--- Results ---")
+    print(f"Total requests: {total}")
+    print(f"Throughput: {throughput:.1f} req/s")
+    print(f"Latency p50: {p50:.0f} ms")
+    print(f"Latency p95: {p95:.0f} ms")
+    print(f"Latency p99: {p99:.0f} ms")
+
+    out_dir = PROJECT_DIR / "jmeter" / "results"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{framework}_{workload}_{phase}_{int(time.time())}.csv"
+    
+    with open(out, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["timeStamp", "elapsed", "success"])
+        for i, r in enumerate(results):
+            w.writerow([i, r, "true"])
+            
+    print(f"\nSaved to: {out}")
 
 if __name__ == "__main__":
     main()
