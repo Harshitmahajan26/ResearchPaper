@@ -1,4 +1,4 @@
-# Spring_Boot_vs_FastAPI_Benchmark_T23_2210994778_2210994857
+# Spring_Boot_vs_FastAPI_Benchmark
 
 ## Project Title
 **Spring Boot vs FastAPI: Resource Efficiency Benchmark Study**
@@ -108,13 +108,5 @@ pip install pandas matplotlib seaborn jinja2 requests prometheus-client numpy
 - CSV results: Throughput, latency percentiles, error rates
 - Plots: Memory usage graphs, performance comparison
 
-**Folder Structure for Submission:**
-```
-Spring_Boot_vs_FastAPI_Benchmark_T23_2210994778_2210994857/
-├── Source_Code/          # (copy all project files)
-├── README.md            # This file
-├── Requirements/        # (Copy this section to txt)
-├── Database/            # (experiment-config.yml + sample CSV)
-```
 
 **Project is fully runnable on standard Windows/Linux/Mac with Docker.**
